@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Разбей Яйцо!</title>
+    <style>
+        body { font-family: Arial, sans-serif; background: #121212; color: #fff; text-align: center; padding: 20px; }
+        .container { max-width: 600px; margin: 0 auto; background: #1e1e1e; padding: 20px; border-radius: 15px; box-shadow: 0 0 20px rgba(0,0,0,0.5); }
+        
+        img { width: 250px; height: auto; margin: 20px 0; display: inline-block; }
+        
+        input, button { padding: 12px; margin: 5px; border-radius: 8px; border: none; font-size: 16px; }
+        input { background: #333; color: #fff; width: 80%; max-width: 300px; text-align: center; }
+        button { background: #ff9800; color: #fff; font-weight: bold; cursor: pointer; width: 85%; max-width: 320px; }
+        button:disabled { background: #555; cursor: not-allowed; }
+        #chat { max-height: 300px; overflow-y: auto; background: #111; padding: 10px; border-radius: 8px; text-align: left; margin-top: 20px; display: flex; flex-direction: column-reverse; }
+        .msg { padding: 8px; border-bottom: 1px solid #222; font-size: 14px; }
+        .win-msg { color: #4caf50; font-weight: bold; background: rgba(76,175,80,0.1); border-radius: 5px; }
+        .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85); justify-content: center; align-items: center; z-index: 1000; }
+        .modal-content { background: #222; padding: 30px; border-radius: 15px; max-width: 400px; border: 2px solid #ff9800; }
+        #status-area { margin: 10px 0; font-size: 18px; color: #ff9800; font-weight: bold; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>🥚 Ивент: Разбей Яйцо!</h2>
+    <p>Каждый удар стоит 100 очков.</p>
+    
+    <img id="egg" src="egg.png" alt="Яйцо">
+    
+    <div id="status-area" style="display:none;"></div>
+
+    <div id="setup-fields">
+        <input type="text" id="username" placeholder="Введите ваше Имя / Никнейм"><br>
+        <button id="auth-btn" onclick="checkOrRegisterUser()">Войти в игру</button>
+    </div>
+    
+    <div id="game-fields" style="display:none;">
+        <input type="text" id="comment" placeholder="Напишите комментарий (например: Бью!)"><br>
+        <button id="hit-btn" onclick="makeHit()">Ударить по яйцу!</button>
+    </div>
+
+    <h3>Лента комментариев:</h3>
+    <div id="chat"></div>
+</div>
+
+<div id="gameover-modal" class="modal">
+    <div class="modal-content">
+        <h2 id="modal-title" style="color: #ff9800;">Игра окончена!</h2>
+        <p id="modal-text">Победитель уже разбил яйцо. Ивент завершен.</p>
+    </div>
+</div>
+
+<script>
+    const DB_URL = "https://firebaseio.com"; 
+
+    let isGameOver = false;
+    let activeName = "";
+    let activePoints = 0;
+
+    function initLiveSync() {
+        // Следим за окончанием игры
+        setInterval(() => {
+            fetch(DB_URL + "gameState.json").then(r => r.json()).then(state => {
+                if (state && state.winnerFound && !isGameOver) {
+                    isGameOver = true;
+                    document.getElementById('hit-btn').disabled = true;
+                    showModal("Игра окончена!", `Победитель найден! Игрок <b>${state.winnerName}</b> разбил яйцо! Ивент завершен.`);
+                }
+            });
+        }, 2000);
+
+        // Обновляем чат комментов
+        setInterval(() => {
+            fetch(DB_URL + "comments.json?orderBy=\"\$key\"&limitToLast=20").then(r => r.json()).then(data => {
+                if(!data) return;
+                const chat = document.getElementById('chat');
+                chat.innerHTML = "";
+                Object.keys(data).sort().reverse().forEach(key => {
+                    const c = data[key];
+                    const div = document.createElement('div');
+                    div.className = "msg" + (c.result === "выиграл" ? " win-msg" : "");
+                    div.innerHTML = `<b>${c.name}</b>: ${c.text} — <i>${c.result === "выиграл" ? "ВЫИГРАЛ! 🎉" : "Не разбилось 🥚"}</i>`;
+                    chat.appendChild(div);
+                });
+            });
+        }, 2500);
+
+        // Проверяем, заходил ли уже этот браузер раньше
+        const savedName = localStorage.getItem('egg_game_username');
+        if (savedName) {
+            document.getElementById('username').value = savedName;
+            checkOrRegisterUser();
+        }
+    }
+
+    // Авторизация / Проверка игрока
+    function checkOrRegisterUser() {
+        const name = document.getElementById('username').value.trim().toLowerCase();
+        if (!name) {
+            alert("Введите ваше имя!");
+            return;
+        }
+
+        // Ищем игрока в базе Firebase
+        fetch(DB_URL + "users/" + name + ".json").then(r => r.json()).then(userData => {
+            document.getElementById('setup-fields').style.display = "none";
+            document.getElementById('game-fields').style.display = "inline-block";
+            document.getElementById('status-area').style.display = "block";
+            
+            activeName = name;
+            localStorage.setItem('egg_game_username', name);
+
+            if (userData !== null) {
+                // Игрок уже есть в базе, берем его старые очки
+                activePoints = parseInt(userData.points);
+                updateStatusText();
+            } else {
+                // Новая регистрация игрока
+                let startPoints = prompt("Сколько у вас очков? (Сайт запомнит эту цифру и её нельзя будет обнулить перезагрузкой)", "500");
+                startPoints = parseInt(startPoints);
+                if (isNaN(startPoints) || startPoints < 0) startPoints = 0;
+
+                activePoints = startPoints;
+                fetch(DB_URL + "users/" + name + ".json", { method: "PUT", body: JSON.stringify({ points: activePoints }) });
+                updateStatusText();
+            }
+        });
+    }
+
+    function updateStatusText() {
+        document.getElementById('status-area').innerHTML = `Игрок: ${activeName.toUpperCase()} | Доступно очков: ${activePoints}`;
+    }
+
+    // Логика удара
+    function makeHit() {
+        if (isGameOver) return;
+
+        const commText = document.getElementById('comment').value.trim() || "Бью!";
+
+        if (activePoints < 100) {
+            alert("У вас недостаточно очков для удара (нужно минимум 100)!");
+            return;
+        }
+
+        // Списываем очки
+        activePoints -= 100;
+        updateStatusText();
+
+        // Сохраняем новый баланс в Firebase
+        fetch(DB_URL + "users/" + activeName + ".json", { method: "PUT", body: JSON.stringify({ points: activePoints }) });
+
+        // Рандомайзер (0.5% шанс)
+        const roll = Math.random();
+        let finalResult = "проиграл";
+
+        if (roll <= 0.005) {
+            finalResult = "выиграл";
+        }
+
+        const newComment = { name: activeName.toUpperCase(), text: commText, result: finalResult };
+        fetch(DB_URL + "comments.json", { method: "POST", body: JSON.stringify(newComment) });
+
+        if (finalResult === "выиграл") {
+            fetch(DB_URL + "gameState.json", { method: "PUT", body: JSON.stringify({ winnerFound: true, winnerName: activeName.toUpperCase() }) });
+            showModal("🎉 ВЫ ПОБЕДИТЕЛЬ!", "Вы разбили яйцо! Сделайте скриншот этого экрана и скорее перейдите в нашу группу ВК для получения приза!");
+        }
+    }
+
+    function showModal(title, text) {
+        document.getElementById('modal-title').innerHTML = title;
+        document.getElementById('modal-text').innerHTML = text;
+        document.getElementById('gameover-modal').style.display = "flex";
+    }
+
+    window.onload = initLiveSync;
+</script>
+</body>
+</html>
